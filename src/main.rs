@@ -1,14 +1,16 @@
-//use pixels;
+use pixels::{Error, Pixels, SurfaceTexture};
 use rand::Rng;
-use std::io::{stdout, Write};
-use std::thread::sleep;
-use std::time::Duration;
+//use std::io::{stdout, Write};
 use winit::{
-    event::{Event, WindowEvent},
+    dpi::LogicalSize,
+    event::{Event, VirtualKeyCode},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
+use winit_input_helper::WinitInputHelper;
+use std::fs;
 
+#[derive(Debug)]
 struct Machine<const W: usize, const H: usize> {
     memory: [u8; 4096], // guess what
     v: [u8; 16],        // general purpose registers
@@ -19,23 +21,23 @@ struct Machine<const W: usize, const H: usize> {
     pc: usize, //program counter
     sp: usize, //stack pointer
     stack: [usize; 16],
-    // display is hard coded to 64x32 might add 64x48, 64x64 and or 128x64
     display: [[bool; W]; H],
     keyboard: [bool; 16],
 }
 
 impl<const W: usize, const H: usize> Machine<W, H> {
-    fn step(&mut self) {
-        let instruction: u16 = self.memory[self.pc] as u16 | (self.memory[self.pc + 1] as u16) << 8;
-        //let instruction = 0x1000_u16;
+    fn update(&mut self) {
+        let opcode: u16 = (self.memory[self.pc] as u16) << 8 | self.memory[self.pc + 1] as u16;
+        //let opcode = 0x1000_u16;
         self.pc += 2;
-        let x = (instruction >> 8 & 0xF) as usize;
-        let y = (instruction >> 4 & 0xF) as usize;
-        let z = (instruction & 0xF) as usize;
-        let k = (instruction & 0xFF) as u8;
-        let n = instruction & 0xFFF;
+        let x = (opcode >> 8 & 0xF) as usize;
+        let y = (opcode >> 4 & 0xF) as usize;
+        let z = (opcode & 0xF) as usize;
+        let k = (opcode & 0xFF) as u8;
+        let n = opcode & 0xFFF;
 
-        match (instruction >> 12 & 0xF) as u8 {
+        println!("{:03x}: {:04x}", self.pc, opcode);
+        match (opcode >> 12 & 0xF) as u8 {
             //# 0nnn - SYS addr
             //Jump to a machine code routine at nnn.
             //
@@ -49,11 +51,11 @@ impl<const W: usize, const H: usize> Machine<W, H> {
             //
             //The interpreter sets the program counter to the address at the top of the stack, then subtracts 1 from the stack pointer.
             0 => {
-                if instruction == 0x00E0 {
+                if opcode == 0x00E0 {
                     //CLS
                     self.display = [[false; W]; H];
                 }
-                if instruction == 0x00EE {
+                if opcode == 0x00EE {
                     self.sp -= 1;
                     self.pc = self.stack[self.sp];
                 }
@@ -196,7 +198,7 @@ impl<const W: usize, const H: usize> Machine<W, H> {
                         self.v[0xf] = (self.v[x] >> 7) & 1;
                         self.v[x] << 1
                     }
-                    _ => panic!("Invalid opcode {}", instruction),
+                    _ => panic!("Invalid opcode {}", opcode),
                 }
             }
 
@@ -239,8 +241,17 @@ impl<const W: usize, const H: usize> Machine<W, H> {
             //
             //The interpreter reads n bytes from memory, starting at the address stored in I. These bytes are then displayed as sprites on screen at coordinates (Vx, Vy). Sprites are XORed onto the existing screen. If this causes any pixels to be erased, VF is set to 1, otherwise it is set to 0. If the sprite is positioned so part of it is outside the coordinates of the display, it wraps around to the opposite side of the screen. See instruction 8xy3 for more information on XOR, and section 2.4, Display, for more information on the Chip-8 screen and sprites.
             0xD => {
-                for _i in 0..z {
-                    //TOD
+                self.v[0xf] = 0;
+                for dy in 0..z {
+                    for dx in 0..8 {
+                        if self.memory[self.i + dy] & 1 << (7 - dx) > 0 {
+                            let nx = (self.v[x] as usize + dx) % W;
+                            let ny = (self.v[y] as usize + dy) % H;
+                            if self.display[ny][nx] { self.v[0xf] |= 1; }
+                            self.display[ny][nx] =
+                                !self.display[ny][nx];
+                        }
+                    }
                 }
             }
 
@@ -273,34 +284,34 @@ impl<const W: usize, const H: usize> Machine<W, H> {
                     //Wait for a key press, store the value of the key in Vx.
                     //
                     //All execution stops until a key is pressed, then the value of that key is stored in Vx.
-                    0x0a => loop {
-                        match event::read().unwrap() {
-                            Event::Key(event) => {
-                                let key = match event.code {
-                                    KeyCode::Char('1') => 0,
-                                    KeyCode::Char('2') => 1,
-                                    KeyCode::Char('3') => 2,
-                                    KeyCode::Char('4') => 3,
-                                    KeyCode::Char('x') => 4,
-                                    KeyCode::Char('v') => 5,
-                                    KeyCode::Char('l') => 6,
-                                    KeyCode::Char('c') => 7,
-                                    KeyCode::Char('u') => 8,
-                                    KeyCode::Char('i') => 9,
-                                    KeyCode::Char('a') => 10,
-                                    KeyCode::Char('e') => 11,
-                                    KeyCode::Char('ü') => 12,
-                                    KeyCode::Char('ö') => 13,
-                                    KeyCode::Char('ä') => 14,
-                                    KeyCode::Char('p') => 15,
-                                    _ => panic!("unexpected key"),
-                                };
-                            }
-                            _ => {
-                                panic!("unexpected evenet")
-                            }
-                        }
-                    },
+                    0x0a => {} //TODO keyboard //loop {
+                    //match event::read().unwrap() {
+                    //Event::Key(event) => {
+                    //let key = match event.code {
+                    //KeyCode::Char('1') => 0,
+                    //KeyCode::Char('2') => 1,
+                    //KeyCode::Char('3') => 2,
+                    //KeyCode::Char('4') => 3,
+                    //KeyCode::Char('x') => 4,
+                    //KeyCode::Char('v') => 5,
+                    //KeyCode::Char('l') => 6,
+                    //KeyCode::Char('c') => 7,
+                    //KeyCode::Char('u') => 8,
+                    //KeyCode::Char('i') => 9,
+                    //KeyCode::Char('a') => 10,
+                    //KeyCode::Char('e') => 11,
+                    //KeyCode::Char('ü') => 12,
+                    //KeyCode::Char('ö') => 13,
+                    //KeyCode::Char('ä') => 14,
+                    //KeyCode::Char('p') => 15,
+                    //_ => panic!("unexpected key"),
+                    //};
+                    //}
+                    //_ => {
+                    //panic!("unexpected evenet")
+                    //}
+                    //}
+                    //},
 
                     //# Fx15 - LD DT, Vx
                     //Set delay timer = Vx.
@@ -373,30 +384,43 @@ impl<const W: usize, const H: usize> Machine<W, H> {
         }
     }
 
-    fn print(&self) -> Result<(), crossterm::ErrorKind> {
-        for (i, line) in self.display.iter().enumerate() {
-            queue!(stdout(), MoveTo(0, i as u16))?;
-            for pixel in line {
-                if *pixel {
-                    queue!(stdout(), Print("#"))?;
-                } else {
-                    queue!(stdout(), Print(" "))?;
-                }
-            }
+    fn draw(&self, frame: &mut [u8]) {
+        for (i, pixel) in frame.chunks_exact_mut(4).enumerate() {
+            let x = i % W;
+            let y = i / W;
+
+            let rgba = if self.display[y][x] {
+                [0xff, 0xff, 0xff, 0xff]
+            } else {
+                [0x00, 0x00, 0x00, 0xff]
+            };
+
+            pixel.copy_from_slice(&rgba);
         }
-        stdout().flush()?;
-        Ok(())
     }
 }
 
-fn main() {
-    const WIDTH: usize = 64;
-    const HEIGHT: usize = 32;
-    let (cols, rows) = size().expect("no size no game");
-    if (cols as usize) < WIDTH || (rows as usize) < HEIGHT {
-        panic!("Need a bigger screen");
+const WIDTH: usize = 64;
+const HEIGHT: usize = 32;
+fn main() -> Result<(), Error> {
+    let event_loop = EventLoop::new();
+    let mut input = WinitInputHelper::new();
+    let window = {
+        let size = LogicalSize::new(WIDTH as f64, HEIGHT as f64);
+        WindowBuilder::new()
+            .with_title("Hello Chip-8")
+            .with_inner_size(size)
+            .with_min_inner_size(size)
+            .build(&event_loop)
+            .unwrap()
     };
-    queue!(stdout(), terminal::EnterAlternateScreen).unwrap();
+
+    let mut pixels = {
+        let window_size = window.inner_size();
+        let surface_texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
+        Pixels::new(WIDTH as u32, HEIGHT as u32, surface_texture)?
+    };
+
     let mut m = Machine {
         memory: [0; 4096], // guess what
         v: [0; 16],        // general purpose registers
@@ -404,17 +428,46 @@ fn main() {
         dt: 0, // delay timer
         st: 0, // sound timer
         //snd: [0; 2], // this or dt & st
-        pc: 0, //program counter
+        pc: 0x200, //program counter
         sp: 0, //stack pointer
         stack: [0; 16],
-        // display is hard coded to 64x32 might add 64x48, 64x64 and or 128x64
-        display: [[false; 64]; 32],
+        display: [[false; WIDTH]; HEIGHT],
         keyboard: [false; 16],
     };
 
-    loop {
-        m.step();
-        m.print().unwrap();
-        sleep(Duration::from_millis(16));
-    }
+    let f = fs::read("./octojam1title.ch8").unwrap();
+    m.memory[0x200..0x200 + f.len()].copy_from_slice(&f);
+    
+    event_loop.run(move |event, _, control_flow| {
+        if let Event::RedrawRequested(_) = event {
+            let frame = pixels.get_frame();
+            m.draw(frame);
+            if pixels
+                .render()
+                .map_err(|e| {
+                    dbg!("pixels.render() failed:");
+                    dbg!(e);
+                })
+                .is_err()
+            {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+        }
+
+        if input.update(&event) {
+            if input.key_pressed(VirtualKeyCode::Escape) || input.quit() {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+
+            if let Some(size) = input.window_resized() {
+                pixels.resize(size.width, size.height); //.resize_surface(size.width, size.height);
+            }
+
+            //dbg!(m.pc);
+            m.update();
+            window.request_redraw();
+        }
+    });
 }
